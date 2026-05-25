@@ -516,7 +516,7 @@ async def restart_handler(_, m):
         await m.reply_text("𝐁𝐨𝐭 𝐢𝐬 𝐑𝐞𝐬𝐞𝐭𝐢𝐧𝐠...", True)
         os.execl(sys.executable, sys.executable, *sys.argv)
 
-@bot.on_message(filters.command("stop") & filters.private)
+@bot.on_message(filters.command("stop"))
 async def cancel_handler(client: Client, m: Message):
     global processing_request, cancel_requested
     bot_info = await client.get_me()
@@ -884,7 +884,7 @@ async def id_command(client, message: Message):
     else:
         await message.reply_text(text, reply_markup=keyboard)
 
-@bot.on_message(filters.private & filters.command(["info"]))
+@bot.on_message(filters.command(["info"]))
 async def info(bot: Client, update: Message):
     
     text = (
@@ -921,6 +921,10 @@ async def txt_handler(bot: Client, m: Message):
     global processing_request, cancel_requested, cancel_message
     processing_request = True
     cancel_requested = False
+    if not m.from_user:
+        await m.reply_text("❌ Could not identify sender. Please use this command as a user (not anonymously).")
+        processing_request = False
+        return
     user_id = m.from_user.id
 
     # ── MongoDB Auth Check ───────────────────────────────────────────────────
@@ -1282,11 +1286,11 @@ async def txt_handler(bot: Client, m: Message):
 
                 if raw_text5 == "yes":
                     raw_title = links[i][0]
-                    t_match = re.search(r"[\(\[]([^\)\]]+)[\)\]]", raw_title)
+                    t_match = re.search(r"[\(\[\{]([^\)\]\}]+)[\)\]\}]", raw_title)
                     if t_match:
                         t_name = t_match.group(1).strip()
-                        v_name = re.sub(r"^[\(\[][^\)\]]+[\)\]]\s*", "", raw_title)
-                        v_name = re.sub(r"[\(\[][^\)\]]+[\)\]]", "", v_name)
+                        v_name = re.sub(r"^[\(\[\{][^\)\]\}]+[\)\]\}]\s*", "", raw_title)
+                        v_name = re.sub(r"[\(\[\{][^\)\]\}]+[\)\]\}]", "", v_name)
                         v_name = re.sub(r":.*", "", v_name).strip()
                     else:
                         t_name = "Untitled"
@@ -1296,6 +1300,15 @@ async def txt_handler(bot: Client, m: Message):
                     _saved_topics = db.get_user_topics(user_id, int(channel_id) if str(channel_id).lstrip("-").isdigit() else 0)
                     if t_name in _saved_topics:
                         current_topic_id = _saved_topics[t_name]
+                    else:
+                        # ── Auto-create forum topic if not saved ─────────────────
+                        try:
+                            new_topic = await bot.create_forum_topic(channel_id, t_name)
+                            current_topic_id = new_topic.id
+                            # Save it so future items in same batch reuse it
+                            db.set_user_topic(user_id, int(channel_id) if str(channel_id).lstrip("-").isdigit() else 0, t_name, current_topic_id)
+                        except Exception:
+                            current_topic_id = None  # fallback: send without topic
                     
                     cc    = f'[🎥]Vid Id : {str(count).zfill(3)}\n**Video Title :** `{v_name} [{res}p] .mkv`\n<blockquote><b>Batch Name : {b_name}\nTopic Name : {t_name}</b></blockquote>\n\n**Extracted by➤**{CR}\n'
                     cc1   = f'[📕]Pdf Id : {str(count).zfill(3)}\n**File Title :** `{v_name} .pdf`\n<blockquote><b>Batch Name : {b_name}\nTopic Name : {t_name}</b></blockquote>\n\n**Extracted by➤**{CR}\n'
@@ -1536,9 +1549,9 @@ async def txt_handler(bot: Client, m: Message):
         await bot.send_message(m.chat.id, f"<blockquote><b>✅ Your Task is completed, please check your Set Channel📱</b></blockquote>")
 
 
-@bot.on_message(filters.text & filters.private)
+@bot.on_message(filters.text & ~filters.channel)
 async def text_handler(bot: Client, m: Message):
-    if m.from_user.is_bot:
+    if not m.from_user or m.from_user.is_bot:
         return
     user_id = m.from_user.id
     links = m.text
