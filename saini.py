@@ -359,8 +359,9 @@ async def send_vid(bot: Client, m: Message, cc, filename, thumb, name, prog, cha
     try:
         if file_size > MAX_FILE_SIZE_BYTES:
             # File exceeds 2000 MB — split it into parts
-            await m.reply_text(f"⚠️ File size is **{file_size // (1024*1024)} MB**, splitting into parts...")
+            split_msg = await m.reply_text(f"⚠️ File size is **{file_size // (1024*1024)} MB**, splitting into parts...")
             parts = await split_video(filename)
+            await split_msg.delete()
             if not parts:
                 await m.reply_text("❌ Splitting failed, attempting to send original file...")
                 parts = [filename]
