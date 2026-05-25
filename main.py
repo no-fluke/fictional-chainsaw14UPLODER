@@ -332,7 +332,8 @@ async def youtube_to_txt(client, message: Message):
         'skip_download': True,
         'force_generic_extractor': True,
         'forcejson': True,
-        'cookies': 'youtube_cookies.txt'  # Specify the cookies file
+        'cookies': 'youtube_cookies.txt',  # Specify the cookies file
+        'extractor_args': {'youtube': {'player_client': ['android']}}  # use android client
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -452,7 +453,15 @@ async def txt_handler(bot: Client, m: Message):
 
             if "youtube.com" in url or "youtu.be" in url:
                 prog = await m.reply_text(f"<i><b>Audio Downloading</b></i>\n<blockquote><b>{str(count).zfill(3)}) {name1}</b></blockquote>")
-                cmd = f'yt-dlp -x --audio-format mp3 --cookies {cookies_file_path} "{url}" -o "{name}.mp3"'
+                # Fixed yt-dlp command: use android client, retries, best audio
+                cmd = (
+                    f'yt-dlp -x --audio-format mp3 '
+                    f'--cookies {cookies_file_path} '
+                    f'--extractor-args "youtube:player_client=android" '
+                    f'-f "bestaudio[ext=m4a]/bestaudio" '
+                    f'-R 25 --fragment-retries 25 '
+                    f'"{url}" -o "{name}.mp3"'
+                )
                 print(f"Running command: {cmd}")
                 os.system(cmd)
                 if os.path.exists(f'{name}.mp3'):
@@ -1243,6 +1252,7 @@ async def txt_handler(bot: Client, m: Message):
                 appxkey = url.split('*')[1]
                 url = url.split('*')[0]
 
+            # ------------------- FIXED FORMAT SELECTOR FOR YOUTUBE -------------------
             if "youtu" in url:
                 ytf = f"bv*[height<={raw_text2}][ext=mp4]+ba[ext=m4a]/b[height<=?{raw_text2}]"
             elif "embed" in url:
@@ -1255,7 +1265,14 @@ async def txt_handler(bot: Client, m: Message):
             elif "webvideos.classplusapp." in url:
                cmd = f'yt-dlp --add-header "referer:https://web.classplusapp.com/" --add-header "x-cdn-tag:empty" -f "{ytf}" "{url}" -o "{name}.mp4"'
             elif "youtube.com" in url or "youtu.be" in url:
-                cmd = f'yt-dlp --cookies youtube_cookies.txt --extractor-args "youtube:player_client=mweb" -f "{ytf}" "{url}" -o "{name}.mp4"'
+                # Use android client, cookies, retries, and proper format
+                cmd = (
+                    f'yt-dlp --cookies {cookies_file_path} '
+                    f'--extractor-args "youtube:player_client=android" '
+                    f'-f "{ytf}" '
+                    f'-R 25 --fragment-retries 25 '
+                    f'"{url}" -o "{name}.mp4"'
+                )
             else:
                 cmd = f'yt-dlp -f "{ytf}" "{url}" -o "{name}.mp4"'
 
@@ -1276,7 +1293,6 @@ async def txt_handler(bot: Client, m: Message):
                         v_name = re.sub(r":.*", "", raw_title).strip()
 
                     # ── Look up saved topic_id from MongoDB ──────────────────────
-                    # If user saved topic IDs via /settopic, use them for message_thread_id
                     _saved_topics = db.get_user_topics(user_id, int(channel_id) if str(channel_id).lstrip("-").isdigit() else 0)
                     if t_name in _saved_topics:
                         current_topic_id = _saved_topics[t_name]
@@ -1639,6 +1655,7 @@ async def text_handler(bot: Client, m: Message):
                 appxkey = url.split('*')[1]
                 url = url.split('*')[0]
 
+            # ------------------- FIXED FORMAT SELECTOR FOR YOUTUBE -------------------
             if "youtu" in url:
                 ytf = f"bv*[height<={raw_text2}][ext=mp4]+ba[ext=m4a]/b[height<=?{raw_text2}]"
             elif "embed" in url:
@@ -1651,7 +1668,13 @@ async def text_handler(bot: Client, m: Message):
             elif "webvideos.classplusapp." in url:
                cmd = f'yt-dlp --add-header "referer:https://web.classplusapp.com/" --add-header "x-cdn-tag:empty" -f "{ytf}" "{url}" -o "{name}.mp4"'
             elif "youtube.com" in url or "youtu.be" in url:
-                cmd = f'yt-dlp --cookies youtube_cookies.txt --extractor-args "youtube:player_client=mweb" -f "{ytf}" "{url}" -o "{name}.mp4"'
+                cmd = (
+                    f'yt-dlp --cookies {cookies_file_path} '
+                    f'--extractor-args "youtube:player_client=android" '
+                    f'-f "{ytf}" '
+                    f'-R 25 --fragment-retries 25 '
+                    f'"{url}" -o "{name}.mp4"'
+                )
             else:
                 cmd = f'yt-dlp -f "{ytf}" "{url}" -o "{name}.mp4"'
 
