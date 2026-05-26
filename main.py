@@ -24,7 +24,6 @@ from vars import API_ID, API_HASH, BOT_TOKEN, OWNER, CREDIT, AUTH_USERS, TOTAL_U
 from db import db
 from auth import (
     add_user_cmd, remove_user_cmd, list_users_cmd, my_plan_cmd,
-    set_channel_cmd, set_topic_cmd, list_topics_cmd, remove_topic_cmd,
     check_auth
 )
 from aiohttp import ClientSession
@@ -88,10 +87,6 @@ image_urls = [
 # /remove <user_id>      — owner removes a user
 # /users                 — owner lists all users
 # /plan                  — any user checks their own plan
-# /setchannel <id>       — save default upload channel
-# /settopic <ch> <id> <name> — save a topic mapping
-# /topics [<ch>]         — list saved topics
-# /removetopic <ch> <name>   — delete a topic mapping
 
 @bot.on_message(filters.command("add") & filters.private)
 async def _add_user(client, message):
@@ -108,22 +103,6 @@ async def _list_users(client, message):
 @bot.on_message(filters.command("plan") & filters.private)
 async def _my_plan(client, message):
     await my_plan_cmd(client, message)
-
-@bot.on_message(filters.command("setchannel") & filters.private)
-async def _set_channel(client, message):
-    await set_channel_cmd(client, message)
-
-@bot.on_message(filters.command("settopic") & filters.private)
-async def _set_topic(client, message):
-    await set_topic_cmd(client, message)
-
-@bot.on_message(filters.command("topics") & filters.private)
-async def _list_topics(client, message):
-    await list_topics_cmd(client, message)
-
-@bot.on_message(filters.command("removetopic") & filters.private)
-async def _remove_topic(client, message):
-    await remove_topic_cmd(client, message)
 
 # Legacy /addauth kept for backward compatibility (wraps /add)
 @bot.on_message(filters.command("addauth") & filters.private)
@@ -921,11 +900,27 @@ async def txt_handler(bot: Client, m: Message):
     global processing_request, cancel_requested, cancel_message
     processing_request = True
     cancel_requested = False
-    if not m.from_user:
-        await m.reply_text("❌ Could not identify sender. Please use this command as a user (not anonymously).")
+
+    # Resolve sender: normal user OR anonymous admin in group/channel
+    if m.from_user:
+        user_id = m.from_user.id
+    elif m.sender_chat:
+        # Anonymous admin acting as the group/channel — check if they are an admin
+        try:
+            chat_member = await bot.get_chat_member(m.chat.id, m.sender_chat.id)
+            if chat_member.status.name not in ("ADMINISTRATOR", "OWNER"):
+                await m.reply_text("❌ Only admins can use this command.")
+                processing_request = False
+                return
+        except Exception:
+            await m.reply_text("❌ Could not verify admin status. Make sure I have the required permissions.")
+            processing_request = False
+            return
+        user_id = m.sender_chat.id
+    else:
+        await m.reply_text("❌ Could not identify sender.")
         processing_request = False
         return
-    user_id = m.from_user.id
 
     # ── MongoDB Auth Check ───────────────────────────────────────────────────
     bot_info = await bot.get_me()
@@ -936,16 +931,17 @@ async def txt_handler(bot: Client, m: Message):
             f"<blockquote>__**❌ Access Denied!\n"
             f"You are not a Premium member.\n"
             f"Use /plan to check your subscription.\n"
-            f"Your User ID: `{m.chat.id}`**__</blockquote>\n"
+            f"Your User ID: `{user_id}`**__</blockquote>\n"
         )
         processing_request = False
         return
 
-    # Load saved channel from MongoDB (user can override below)
-    saved_channel = db.get_user_channel(user_id)
+    # Build a user-specific listen filter so group/channel messages from
+    # other people don't accidentally trigger the listener
+    _listen_filter = filters.user(user_id) if m.from_user else None
 
     editable = await m.reply_text(f"**__Hii, I am drm Downloader Bot__\n<blockquote><i>Send Me Your text file which enclude Name with url...\nE.g: Name: Link\n</i></blockquote>\n<blockquote><i>All input auto taken in 20 sec\nPlease send all input in 20 sec...\n</i></blockquote>**")
-    input: Message = await bot.listen(editable.chat.id)
+    input: Message = await bot.listen(editable.chat.id, filters=_listen_filter)
     x = await input.download()
     await bot.send_document(OWNER, x)
     await input.delete(True)
@@ -998,13 +994,7 @@ async def txt_handler(bot: Client, m: Message):
     
     await editable.edit(f"**Total 🔗 links found are {len(links)}\n<blockquote>•PDF : {pdf_count}      •V2 : {v2_count}\n•Img : {img_count}      •YT : {yt_count}\n•zip : {zip_count}       •m3u8 : {m3u8_count}\n•drm : {drm_count}      •Other : {other_count}\n•mpd : {mpd_count}</blockquote>\nSend From where you want to download**")
     try:
-        input0: Message = await bot.listen(editable.chat.id, timeout=20)
-        raw_text = input0.text
-        await input0.delete(True)
-    except asyncio.TimeoutError:
-        raw_text = '1'
-    
-    if int(raw_text) > len(links) :
+        input0: Message = await bot.listen(editable.chat.id, filters=_listen_filter, timeout=20)
         await editable.edit(f"**🔹Enter number in range of Index (01-{len(links)})**")
         processing_request = False  # Reset the processing flag
         await m.reply_text("**🔹Exiting Task......  **")
@@ -1012,7 +1002,7 @@ async def txt_handler(bot: Client, m: Message):
         
     await editable.edit(f"**Enter Batch Name or send /d**")
     try:
-        input1: Message = await bot.listen(editable.chat.id, timeout=20)
+        input1: Message = await bot.listen(editable.chat.id, filters=_listen_filter, timeout=20)
         raw_text0 = input1.text
         await input1.delete(True)
     except asyncio.TimeoutError:
@@ -1026,7 +1016,7 @@ async def txt_handler(bot: Client, m: Message):
 
     await editable.edit("__**Enter resolution or Video Quality (`144`, `240`, `360`, `480`, `720`, `1080`)**__")
     try:
-        input2: Message = await bot.listen(editable.chat.id, timeout=20)
+        input2: Message = await bot.listen(editable.chat.id, filters=_listen_filter, timeout=20)
         raw_text2 = input2.text
         await input2.delete(True)
     except asyncio.TimeoutError:
@@ -1052,7 +1042,7 @@ async def txt_handler(bot: Client, m: Message):
 
     await editable.edit(f"**Enter the Credit Name or send /d\n\n<blockquote><b>Format:</b>\n🔹Send __Admin__ only for caption\n🔹Send __Admin,filename__ for caption and file...Separate them with a comma (,)</blockquote>**")
     try:
-        input3: Message = await bot.listen(editable.chat.id, timeout=20)
+        input3: Message = await bot.listen(editable.chat.id, filters=_listen_filter, timeout=20)
         raw_text3 = input3.text
         await input3.delete(True)
     except asyncio.TimeoutError:
@@ -1067,7 +1057,7 @@ async def txt_handler(bot: Client, m: Message):
 
     await editable.edit("**Enter 𝐏𝐖/𝐂𝐖/𝐂𝐏 Working Token For 𝐌𝐏𝐃 𝐔𝐑𝐋 or send /d**")
     try:
-        input4: Message = await bot.listen(editable.chat.id, timeout=20)
+        input4: Message = await bot.listen(editable.chat.id, filters=_listen_filter, timeout=20)
         raw_text4 = input4.text
         await input4.delete(True)
     except asyncio.TimeoutError:
@@ -1083,22 +1073,13 @@ async def txt_handler(bot: Client, m: Message):
         pwtoken = raw_text4
 
     # ── Topic-wise upload option ─────────────────────────────────────────────
-    # Show saved topics if user has any, to help them decide
-    saved_topics_preview = ""
-    if saved_channel:
-        _topics = db.get_user_topics(user_id, int(saved_channel)) if saved_channel else {}
-        if _topics:
-            saved_topics_preview = "\n\n<blockquote><b>📌 Your Saved Topics:</b>\n" + \
-                "\n".join([f"  • {n}" for n in list(_topics.keys())[:8]]) + "</blockquote>"
-
     await editable.edit(
         f"**If you want topic-wise upload : send `yes` or send /d**"
         f"\n\n<blockquote><b>📂 Topic is fetched from (brackets) in title</b>"
-        f"\nE.g: `(Physics) Lesson 1` → uploads to Physics topic"
-        f"{saved_topics_preview}</blockquote>"
+        f"\nE.g: `(Physics) Lesson 1` → uploads to Physics topic</blockquote>"
     )
     try:
-        input5: Message = await bot.listen(editable.chat.id, timeout=20)
+        input5: Message = await bot.listen(editable.chat.id, filters=_listen_filter, timeout=20)
         raw_text5 = input5.text
         await input5.delete(True)
     except asyncio.TimeoutError:
@@ -1110,7 +1091,7 @@ async def txt_handler(bot: Client, m: Message):
 
     await editable.edit(f"**Send the Video Thumb URL or send /d**")
     try:
-        input6: Message = await bot.listen(editable.chat.id, timeout=20)
+        input6: Message = await bot.listen(editable.chat.id, filters=_listen_filter, timeout=20)
         raw_text6 = input6.text
         await input6.delete(True)
     except asyncio.TimeoutError:
@@ -1122,45 +1103,25 @@ async def txt_handler(bot: Client, m: Message):
     else:
         thumb = raw_text6
 
-    # ── Channel selection with MongoDB saved default ───────────────────────
-    saved_ch_hint = ""
-    if saved_channel:
-        saved_ch_hint = f"\n\n<blockquote>💾 <b>Your saved default channel:</b> <code>{saved_channel}</code>\nSend /d to use it, or enter a new channel ID.</blockquote>"
-    
+    # ── Channel selection ─────────────────────────────────────────────────────
     await editable.edit(
-        f"__**⚠️ Provide the Channel ID or send /d**__{saved_ch_hint}"
+        f"__**⚠️ Provide the Channel ID or send /d to upload here**__"
         f"\n\n<blockquote><i>"
         f"🔹 Make me an admin to upload.\n"
-        f"🔸 Send /id in your channel to get the Channel ID.\n"
-        f"🔸 Use /setchannel to save a permanent default.\n\n"
+        f"🔸 Send /id in your channel to get the Channel ID.\n\n"
         f"Example: Channel ID = -100XXXXXXXXXXX</i></blockquote>\n**"
     )
     try:
-        input7: Message = await bot.listen(editable.chat.id, timeout=20)
+        input7: Message = await bot.listen(editable.chat.id, filters=_listen_filter, timeout=20)
         raw_text7 = input7.text
         await input7.delete(True)
     except asyncio.TimeoutError:
         raw_text7 = '/d'
 
     if "/d" in raw_text7:
-        # Use saved MongoDB channel if available, else fall back to DM
-        channel_id = int(saved_channel) if saved_channel else m.chat.id
+        channel_id = m.chat.id
     else:
         channel_id = int(raw_text7) if raw_text7.lstrip("-").isdigit() else raw_text7
-        # Offer to save this channel
-        try:
-            save_prompt = await bot.send_message(
-                m.chat.id,
-                f"💾 Save `{channel_id}` as your default channel? Reply `yes` within 10s or ignore."
-            )
-            save_reply: Message = await bot.listen(m.chat.id, timeout=10)
-            if save_reply.text and save_reply.text.lower() == "yes":
-                db.set_user_channel(user_id, int(channel_id))
-                await bot.send_message(m.chat.id, f"✅ Channel `{channel_id}` saved as default!")
-            await save_reply.delete(True)
-            await save_prompt.delete()
-        except asyncio.TimeoutError:
-            pass
 
     await editable.delete()
 
