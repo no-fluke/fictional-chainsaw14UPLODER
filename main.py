@@ -1264,7 +1264,7 @@ async def txt_handler(bot: Client, m: Message):
                         current_topic_id = topic_cache[t_name]
                     else:
                         try:
-                            new_topic = await bot.create_forum_topic(channel_id, t_name)
+                            new_topic = await bot.create_forum_topic(chat_id=channel_id, name=t_name)
                             current_topic_id = new_topic.id
                             topic_cache[t_name] = current_topic_id
                         except Exception as te:
