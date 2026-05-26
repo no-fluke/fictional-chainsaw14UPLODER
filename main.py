@@ -24,7 +24,6 @@ from vars import API_ID, API_HASH, BOT_TOKEN, OWNER, CREDIT, AUTH_USERS, TOTAL_U
 from db import db
 from auth import (
     add_user_cmd, remove_user_cmd, list_users_cmd, my_plan_cmd,
-    set_channel_cmd, set_topic_cmd, list_topics_cmd, remove_topic_cmd,
     check_auth
 )
 from aiohttp import ClientSession
@@ -109,21 +108,6 @@ async def _list_users(client, message):
 async def _my_plan(client, message):
     await my_plan_cmd(client, message)
 
-@bot.on_message(filters.command("setchannel") & filters.private)
-async def _set_channel(client, message):
-    await set_channel_cmd(client, message)
-
-@bot.on_message(filters.command("settopic") & filters.private)
-async def _set_topic(client, message):
-    await set_topic_cmd(client, message)
-
-@bot.on_message(filters.command("topics") & filters.private)
-async def _list_topics(client, message):
-    await list_topics_cmd(client, message)
-
-@bot.on_message(filters.command("removetopic") & filters.private)
-async def _remove_topic(client, message):
-    await remove_topic_cmd(client, message)
 
 # Legacy /addauth kept for backward compatibility (wraps /add)
 @bot.on_message(filters.command("addauth") & filters.private)
@@ -941,8 +925,7 @@ async def txt_handler(bot: Client, m: Message):
         processing_request = False
         return
 
-    # Load saved channel from MongoDB (user can override below)
-    saved_channel = db.get_user_channel(user_id)
+    saved_channel = None  # setchannel feature removed
 
     editable = await m.reply_text(f"**__Hii, I am drm Downloader Bot__\n<blockquote><i>Send Me Your text file which enclude Name with url...\nE.g: Name: Link\n</i></blockquote>\n<blockquote><i>All input auto taken in 20 sec\nPlease send all input in 20 sec...\n</i></blockquote>**")
     input: Message = await bot.listen(editable.chat.id)
@@ -1087,19 +1070,11 @@ async def txt_handler(bot: Client, m: Message):
         pwtoken = raw_text4
 
     # ── Topic-wise upload option ─────────────────────────────────────────────
-    # Show saved topics if user has any, to help them decide
-    saved_topics_preview = ""
-    if saved_channel:
-        _topics = db.get_user_topics(user_id, int(saved_channel)) if saved_channel else {}
-        if _topics:
-            saved_topics_preview = "\n\n<blockquote><b>📌 Your Saved Topics:</b>\n" + \
-                "\n".join([f"  • {n}" for n in list(_topics.keys())[:8]]) + "</blockquote>"
-
+    # ── Topic-wise upload option ─────────────────────────────────────────────
     await editable.edit(
         f"**If you want topic-wise upload : send `yes` or send /d**"
         f"\n\n<blockquote><b>📂 Topic is fetched from (brackets) in title</b>"
-        f"\nE.g: `(Physics) Lesson 1` → uploads to Physics topic"
-        f"{saved_topics_preview}</blockquote>"
+        f"\nE.g: `(Physics) Lesson 1` → uploads to Physics topic</blockquote>"
     )
     try:
         input5: Message = await bot.listen(editable.chat.id, timeout=20)
@@ -1108,8 +1083,6 @@ async def txt_handler(bot: Client, m: Message):
     except asyncio.TimeoutError:
         raw_text5 = '/d'
 
-    # ── If topic-wise: ask topic → channel mapping mode ──────────────────────
-    # (db.get_user_topics is used during upload loop to look up topic_id)
     use_saved_topics = raw_text5.lower() == "yes"
 
     await editable.edit(f"**Send the Video Thumb URL or send /d**")
@@ -1126,17 +1099,12 @@ async def txt_handler(bot: Client, m: Message):
     else:
         thumb = raw_text6
 
-    # ── Channel selection with MongoDB saved default ───────────────────────
-    saved_ch_hint = ""
-    if saved_channel:
-        saved_ch_hint = f"\n\n<blockquote>💾 <b>Your saved default channel:</b> <code>{saved_channel}</code>\nSend /d to use it, or enter a new channel ID.</blockquote>"
-    
+    # ── Channel selection ─────────────────────────────────────────────────────
     await editable.edit(
-        f"__**⚠️ Provide the Channel ID or send /d**__{saved_ch_hint}"
+        f"__**⚠️ Provide the Channel ID or send /d to upload here**__"
         f"\n\n<blockquote><i>"
         f"🔹 Make me an admin to upload.\n"
-        f"🔸 Send /id in your channel to get the Channel ID.\n"
-        f"🔸 Use /setchannel to save a permanent default.\n\n"
+        f"🔸 Send /id in your channel to get the Channel ID.\n\n"
         f"Example: Channel ID = -100XXXXXXXXXXX</i></blockquote>\n**"
     )
     try:
@@ -1147,24 +1115,9 @@ async def txt_handler(bot: Client, m: Message):
         raw_text7 = '/d'
 
     if "/d" in raw_text7:
-        # Use saved MongoDB channel if available, else fall back to DM
-        channel_id = int(saved_channel) if saved_channel else m.chat.id
+        channel_id = m.chat.id
     else:
         channel_id = int(raw_text7) if raw_text7.lstrip("-").isdigit() else raw_text7
-        # Offer to save this channel
-        try:
-            save_prompt = await bot.send_message(
-                m.chat.id,
-                f"💾 Save `{channel_id}` as your default channel? Reply `yes` within 10s or ignore."
-            )
-            save_reply: Message = await bot.listen(m.chat.id, timeout=10)
-            if save_reply.text and save_reply.text.lower() == "yes":
-                db.set_user_channel(user_id, int(channel_id))
-                await bot.send_message(m.chat.id, f"✅ Channel `{channel_id}` saved as default!")
-            await save_reply.delete(True)
-            await save_prompt.delete()
-        except asyncio.TimeoutError:
-            pass
 
     await editable.delete()
 
@@ -1300,19 +1253,12 @@ async def txt_handler(bot: Client, m: Message):
                         t_name = "Untitled"
                         v_name = re.sub(r":.*", "", raw_title).strip()
 
-                    # ── Look up saved topic_id from MongoDB ──────────────────────
-                    _saved_topics = db.get_user_topics(user_id, int(channel_id) if str(channel_id).lstrip("-").isdigit() else 0)
-                    if t_name in _saved_topics:
-                        current_topic_id = _saved_topics[t_name]
-                    else:
-                        # ── Auto-create forum topic if not saved ─────────────────
-                        try:
-                            new_topic = await bot.create_forum_topic(channel_id, t_name)
-                            current_topic_id = new_topic.id
-                            # Save it so future items in same batch reuse it
-                            db.set_user_topic(user_id, int(channel_id) if str(channel_id).lstrip("-").isdigit() else 0, t_name, current_topic_id)
-                        except Exception:
-                            current_topic_id = None  # fallback: send without topic
+                    # ── Auto-create forum topic ──────────────────────────────
+                    try:
+                        new_topic = await bot.create_forum_topic(channel_id, t_name)
+                        current_topic_id = new_topic.id
+                    except Exception:
+                        current_topic_id = None  # fallback: send without topic
                     
                     cc    = f'[🎥]Vid Id : {str(count).zfill(3)}\n**Video Title :** `{v_name} [{res}p] .mkv`\n<blockquote><b>Batch Name : {b_name}\nTopic Name : {t_name}</b></blockquote>\n\n**Extracted by➤**{CR}\n'
                     cc1   = f'[📕]Pdf Id : {str(count).zfill(3)}\n**File Title :** `{v_name} .pdf`\n<blockquote><b>Batch Name : {b_name}\nTopic Name : {t_name}</b></blockquote>\n\n**Extracted by➤**{CR}\n'
