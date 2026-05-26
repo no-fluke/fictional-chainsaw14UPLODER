@@ -361,7 +361,7 @@ async def youtube_to_txt(client, message: Message):
     os.remove(txt_file)
 
 @bot.on_message(filters.command(["ytm"]))
-async def txt_handler(bot: Client, m: Message):
+async def ytm_handler(bot: Client, m: Message):
     global processing_request, cancel_requested, cancel_message
     processing_request = True
     cancel_requested = False
@@ -1070,7 +1070,6 @@ async def txt_handler(bot: Client, m: Message):
         pwtoken = raw_text4
 
     # ── Topic-wise upload option ─────────────────────────────────────────────
-    # ── Topic-wise upload option ─────────────────────────────────────────────
     await editable.edit(
         f"**If you want topic-wise upload : send `yes` or send /d**"
         f"\n\n<blockquote><b>📂 Topic is fetched from (brackets) in title</b>"
@@ -1083,7 +1082,6 @@ async def txt_handler(bot: Client, m: Message):
     except asyncio.TimeoutError:
         raw_text5 = '/d'
 
-    use_saved_topics = raw_text5.lower() == "yes"
 
     await editable.edit(f"**Send the Video Thumb URL or send /d**")
     try:
@@ -1138,8 +1136,16 @@ async def txt_handler(bot: Client, m: Message):
 
         
     failed_count = 0
-    count =int(raw_text)    
+    count = int(raw_text)
     arg = int(raw_text)
+    topic_cache = {}  # cache: t_name -> topic_id, avoids duplicate topic creation
+
+    async def send_to_channel(method, topic_id=None, **kwargs):
+        """Send to channel, injecting message_thread_id when topic_id is set."""
+        if topic_id:
+            kwargs["message_thread_id"] = topic_id
+        return await method(**kwargs)
+
     try:
         for i in range(arg-1, len(links)):
             if cancel_requested:
@@ -1241,7 +1247,7 @@ async def txt_handler(bot: Client, m: Message):
                 # ── Determine topic_id for forum/topic channels ───────────────────
                 current_topic_id = None  # None = regular channel (no topic threading)
 
-                if raw_text5 == "yes":
+                if raw_text5.lower() == "yes":
                     raw_title = links[i][0]
                     t_match = re.search(r"[\(\[\{]([^\)\]\}]+)[\)\]\}]", raw_title)
                     if t_match:
@@ -1253,12 +1259,17 @@ async def txt_handler(bot: Client, m: Message):
                         t_name = "Untitled"
                         v_name = re.sub(r":.*", "", raw_title).strip()
 
-                    # ── Auto-create forum topic ──────────────────────────────
-                    try:
-                        new_topic = await bot.create_forum_topic(channel_id, t_name)
-                        current_topic_id = new_topic.id
-                    except Exception:
-                        current_topic_id = None  # fallback: send without topic
+                    # ── Reuse or create forum topic (cached per batch) ───────
+                    if t_name in topic_cache:
+                        current_topic_id = topic_cache[t_name]
+                    else:
+                        try:
+                            new_topic = await bot.create_forum_topic(channel_id, t_name)
+                            current_topic_id = new_topic.id
+                            topic_cache[t_name] = current_topic_id
+                        except Exception as te:
+                            current_topic_id = None
+                            await m.reply_text(f"⚠️ Could not create topic `{t_name}`: {str(te)}\nUploading to General as fallback.")
                     
                     cc    = f'[🎥]Vid Id : {str(count).zfill(3)}\n**Video Title :** `{v_name} [{res}p] .mkv`\n<blockquote><b>Batch Name : {b_name}\nTopic Name : {t_name}</b></blockquote>\n\n**Extracted by➤**{CR}\n'
                     cc1   = f'[📕]Pdf Id : {str(count).zfill(3)}\n**File Title :** `{v_name} .pdf`\n<blockquote><b>Batch Name : {b_name}\nTopic Name : {t_name}</b></blockquote>\n\n**Extracted by➤**{CR}\n'
@@ -1276,22 +1287,17 @@ async def txt_handler(bot: Client, m: Message):
                     ccm   = f'[🎵]Audio Id : {str(count).zfill(3)}\n**Audio Title :** `{name1} .mp3`\n<blockquote><b>Batch Name :</b> {b_name}</blockquote>\n\n**Extracted by➤**{CR}\n'
                     cchtml= f'[🌐]Html Id : {str(count).zfill(3)}\n**Html Title :** `{name1} .html`\n<blockquote><b>Batch Name :</b> {b_name}</blockquote>\n\n**Extracted by➤**{CR}\n'
 
-                # ── Helper: send to channel with optional topic threading ──────
-                async def send_to_channel(method, **kwargs):
-                    """Wraps bot send methods to inject message_thread_id when available."""
-                    if current_topic_id:
-                        kwargs["message_thread_id"] = current_topic_id
-                    return await method(**kwargs)
-                    
+                # send_to_channel defined outside loop (see above)
+                
                 if "drive" in url:
                     try:
                         ka = await helper.download(url, name)
-                        copy = await send_to_channel(bot.send_document, chat_id=channel_id, document=ka, caption=cc1)
+                        copy = await send_to_channel(bot.send_document, topic_id=current_topic_id, chat_id=channel_id, document=ka, caption=cc1)
                         count+=1
                         os.remove(ka)
                     except FloodWait as e:
                         await m.reply_text(str(e))
-                        time.sleep(e.x)
+                        time.sleep(e.value)
                         continue    
   
                 elif ".pdf" in url:
@@ -1312,7 +1318,7 @@ async def txt_handler(bot: Client, m: Message):
                                     with open(f'{name}.pdf', 'wb') as file:
                                         file.write(response.content)
                                     await asyncio.sleep(retry_delay)  # Optional, to prevent spamming
-                                    copy = await send_to_channel(bot.send_document, chat_id=channel_id, document=f'{name}.pdf', caption=cc1)
+                                    copy = await send_to_channel(bot.send_document, topic_id=current_topic_id, chat_id=channel_id, document=f'{name}.pdf', caption=cc1)
                                     count += 1
                                     os.remove(f'{name}.pdf')
                                     success = True
@@ -1334,24 +1340,24 @@ async def txt_handler(bot: Client, m: Message):
                             cmd = f'yt-dlp -o "{name}.pdf" "{url}"'
                             download_cmd = f"{cmd} -R 25 --fragment-retries 25"
                             os.system(download_cmd)
-                            copy = await send_to_channel(bot.send_document, chat_id=channel_id, document=f'{name}.pdf', caption=cc1)
+                            copy = await send_to_channel(bot.send_document, topic_id=current_topic_id, chat_id=channel_id, document=f'{name}.pdf', caption=cc1)
                             count += 1
                             os.remove(f'{name}.pdf')
                         except FloodWait as e:
                             await m.reply_text(str(e))
-                            time.sleep(e.x)
+                            time.sleep(e.value)
                             continue    
 
                 elif ".ws" in url and  url.endswith(".ws"):
                     try:
                         await helper.pdf_download(f"{api_url}utkash-ws?url={url}&authorization={api_token}",f"{name}.html")
                         time.sleep(1)
-                        await send_to_channel(bot.send_document, chat_id=channel_id, document=f"{name}.html", caption=cchtml)
+                        await send_to_channel(bot.send_document, topic_id=current_topic_id, chat_id=channel_id, document=f"{name}.html", caption=cchtml)
                         os.remove(f'{name}.html')
                         count += 1
                     except FloodWait as e:
                         await m.reply_text(str(e))
-                        time.sleep(e.x)
+                        time.sleep(e.value)
                         continue    
                             
                 elif any(ext in url for ext in [".jpg", ".jpeg", ".png"]):
@@ -1360,12 +1366,12 @@ async def txt_handler(bot: Client, m: Message):
                         cmd = f'yt-dlp -o "{name}.{ext}" "{url}"'
                         download_cmd = f"{cmd} -R 25 --fragment-retries 25"
                         os.system(download_cmd)
-                        copy = await send_to_channel(bot.send_photo, chat_id=channel_id, photo=f'{name}.{ext}', caption=ccimg)
+                        copy = await send_to_channel(bot.send_photo, topic_id=current_topic_id, chat_id=channel_id, photo=f'{name}.{ext}', caption=ccimg)
                         count += 1
                         os.remove(f'{name}.{ext}')
                     except FloodWait as e:
                         await m.reply_text(str(e))
-                        time.sleep(e.x)
+                        time.sleep(e.value)
                         continue    
 
                 elif any(ext in url for ext in [".mp3", ".wav", ".m4a"]):
@@ -1374,12 +1380,12 @@ async def txt_handler(bot: Client, m: Message):
                         cmd = f'yt-dlp -o "{name}.{ext}" "{url}"'
                         download_cmd = f"{cmd} -R 25 --fragment-retries 25"
                         os.system(download_cmd)
-                        copy = await send_to_channel(bot.send_document, chat_id=channel_id, document=f'{name}.{ext}', caption=ccm)
+                        copy = await send_to_channel(bot.send_document, topic_id=current_topic_id, chat_id=channel_id, document=f'{name}.{ext}', caption=ccm)
                         count += 1
                         os.remove(f'{name}.{ext}')
                     except FloodWait as e:
                         await m.reply_text(str(e))
-                        time.sleep(e.x)
+                        time.sleep(e.value)
                         continue    
                     
                 elif 'encrypted.m' in url:    
@@ -1654,7 +1660,7 @@ async def text_handler(bot: Client, m: Message):
                         os.remove(ka)
                     except FloodWait as e:
                         await m.reply_text(str(e))
-                        time.sleep(e.x)
+                        time.sleep(e.value)
                         pass
 
                 elif ".pdf" in url:
@@ -1706,7 +1712,7 @@ async def text_handler(bot: Client, m: Message):
                             os.remove(f'{name}.pdf')
                         except FloodWait as e:
                             await m.reply_text(str(e))
-                            time.sleep(e.x)
+                            time.sleep(e.value)
                             pass   
 
                 elif any(ext in url for ext in [".mp3", ".wav", ".m4a"]):
@@ -1719,7 +1725,7 @@ async def text_handler(bot: Client, m: Message):
                         os.remove(f'{name}.{ext}')
                     except FloodWait as e:
                         await m.reply_text(str(e))
-                        time.sleep(e.x)
+                        time.sleep(e.value)
                         pass
 
                 elif any(ext in url for ext in [".jpg", ".jpeg", ".png"]):
@@ -1733,7 +1739,7 @@ async def text_handler(bot: Client, m: Message):
                         os.remove(f'{name}.{ext}')
                     except FloodWait as e:
                         await m.reply_text(str(e))
-                        time.sleep(e.x)
+                        time.sleep(e.value)
                         pass
                                 
                 elif 'encrypted.m' in url:    
